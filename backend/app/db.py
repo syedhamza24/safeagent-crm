@@ -48,6 +48,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             order_id TEXT NOT NULL,
             customer_id TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
+            idempotency_key TEXT UNIQUE,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         """
