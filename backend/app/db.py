@@ -4,6 +4,7 @@ Uses Python's built-in sqlite3, so there is nothing extra to install.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         DROP TABLE IF EXISTS customers;
         DROP TABLE IF EXISTS orders;
         DROP TABLE IF EXISTS refunds;
+        DROP TABLE IF EXISTS audit_log;
 
         CREATE TABLE customers (
             id TEXT PRIMARY KEY,
@@ -50,6 +52,24 @@ def init_db(conn: sqlite3.Connection) -> None:
             amount_cents INTEGER NOT NULL,
             idempotency_key TEXT UNIQUE,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            customer_id TEXT NOT NULL,
+            user_message TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            args_json TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            decision TEXT NOT NULL,
+            reasons_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            idempotency_key TEXT,
+            resolved_by TEXT,
+            resolved_at TEXT
         );
         """
     )
@@ -114,3 +134,77 @@ def build_context(
         refunded_today_cents=refunded_today_cents(conn, customer_id),
         injection_suspected=injection_suspected,
     )
+
+
+# ---------------------------------------------------------------- audit log
+
+def create_audit(
+    conn: sqlite3.Connection,
+    *,
+    customer_id: str,
+    user_message: str,
+    tool: str,
+    args: dict,
+    risk: str,
+    score: int,
+    decision: str,
+    reasons: list[str],
+    status: str,
+    result: dict | None = None,
+    idempotency_key: str | None = None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO audit_log (customer_id, user_message, tool, args_json, risk, score, decision, "
+        "reasons_json, status, result_json, idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            customer_id,
+            user_message,
+            tool,
+            json.dumps(args),
+            risk,
+            score,
+            decision,
+            json.dumps(reasons),
+            status,
+            json.dumps(result) if result is not None else None,
+            idempotency_key,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_audit(
+    conn: sqlite3.Connection,
+    audit_id: int,
+    *,
+    status: str,
+    result: dict | None = None,
+    resolved_by: str | None = None,
+) -> None:
+    conn.execute(
+        "UPDATE audit_log SET status = ?, result_json = COALESCE(?, result_json), "
+        "resolved_by = COALESCE(?, resolved_by), "
+        "resolved_at = CASE WHEN ? IS NULL THEN resolved_at ELSE datetime('now') END WHERE id = ?",
+        (status, json.dumps(result) if result is not None else None, resolved_by, resolved_by, audit_id),
+    )
+    conn.commit()
+
+
+def _audit_row_to_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    d["args"] = json.loads(d.pop("args_json"))
+    d["reasons"] = json.loads(d.pop("reasons_json"))
+    rj = d.pop("result_json")
+    d["result"] = json.loads(rj) if rj else None
+    return d
+
+
+def get_audit(conn: sqlite3.Connection, audit_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM audit_log WHERE id = ?", (audit_id,)).fetchone()
+    return _audit_row_to_dict(row) if row else None
+
+
+def list_audit(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_audit_row_to_dict(r) for r in rows]
