@@ -3,3 +3,6 @@ pytest
 openai
 python-dotenv
 langgraph
+fastapi
+uvicorn
+httpx

@@ -14,7 +14,7 @@ DB_PATH = Path(__file__).resolve().parent.parent / "safeagent.db"
 
 
 def get_conn(path: Path | str | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path or DB_PATH))
+    conn = sqlite3.connect(str(path or DB_PATH), check_same_thread=False)  # web server uses threads
     conn.row_factory = sqlite3.Row
     return conn
 
